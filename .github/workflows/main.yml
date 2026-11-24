@@ -1,0 +1,105 @@
+name: MR ALONE RDP
+
+on:
+  workflow_dispatch:
+    inputs:
+      tailscale_key:
+        description: 'Enter your Tailscale Auth Key (tskey-auth-...)'
+        required: true
+        default: ''
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Enable Windows Remote Desktop (RDP) and Configure User
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
+
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
+
+          net user runneradmin "Password123!"
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Failed to configure runneradmin user."
+          }
+
+          net localgroup "Remote Desktop Users" runneradmin /add
+
+          if ($LASTEXITCODE -ne 0) {
+              Write-Host "User may already be in Remote Desktop Users group."
+          }
+
+      - name: Install and Connect Tailscale
+        shell: pwsh
+        env:
+          TAILSCALE_AUTH_KEY: ${{ github.event.inputs.tailscale_key }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ([string]::IsNullOrWhiteSpace($env:TAILSCALE_AUTH_KEY)) {
+              throw "Tailscale Auth Key is missing."
+          }
+
+          $installer = Join-Path $env:TEMP "tailscale-setup.exe"
+
+          Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $installer
+
+          $install = Start-Process -FilePath $installer -ArgumentList "/quiet" -Wait -PassThru
+
+          if ($install.ExitCode -ne 0) {
+              throw "Tailscale installation failed."
+          }
+
+          $tailscaleExe = "C:\Program Files\Tailscale\tailscale.exe"
+
+          if (-not (Test-Path $tailscaleExe)) {
+              throw "Tailscale executable not found."
+          }
+
+          & $tailscaleExe up "--authkey=$env:TAILSCALE_AUTH_KEY" --accept-routes
+
+          if ($LASTEXITCODE -ne 0) {
+              throw "Tailscale connection failed."
+          }
+
+          Start-Sleep -Seconds 5
+
+          $ip = (& $tailscaleExe ip -4 | Select-Object -First 1).Trim()
+
+          if ([string]::IsNullOrWhiteSpace($ip)) {
+              throw "Could not retrieve Tailscale IP."
+          }
+
+          Write-Host ""
+          Write-Host "=================================================================="
+          Write-Host "YOUR WINDOWS SERVER RDP IS READY"
+          Write-Host "=================================================================="
+          Write-Host "RDP IP Address : $ip"
+          Write-Host "Username       : runneradmin"
+          Write-Host "Password       : Password123!"
+          Write-Host "Network        : Tailscale"
+          Write-Host "Duration       : Up to 6 Hours"
+          Write-Host "=================================================================="
+          Write-Host ""
+
+      - name: Keep-Alive Runner (Up to 6 Hours Active)
+        shell: pwsh
+        run: |
+          $totalMinutes = 350
+
+          for ($i = 1; $i -le $totalMinutes; $i++) {
+
+              Start-Sleep -Seconds 60
+
+              if ($i % 10 -eq 0) {
+                  Write-Host "Windows RDP Active: $i / $totalMinutes minutes"
+              }
+          }
